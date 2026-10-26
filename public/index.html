@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventory Agent</title>
+<style>
+  body { font-family: sans-serif; max-width: 600px; margin: auto; padding: 12px; }
+  .u { background: #e3f0ff; padding: 8px; margin: 6px 0; border-radius: 8px; }
+  .a { background: #f1f1f1; padding: 8px; margin: 6px 0; border-radius: 8px; }
+  .err { background: #ffe3e3; padding: 8px; margin: 6px 0; border-radius: 8px; }
+  input { width: 70%; padding: 8px; }
+  button { padding: 8px 12px; margin: 4px 2px; }
+  li { cursor: pointer; margin: 4px 0; }
+  pre { background: #f6f6f6; padding: 8px; overflow-x: auto; font-size: 12px; }
+</style>
+</head>
+<body>
+<h2>Inventory Agent</h2>
+<div id="chat"></div>
+<div id="pending" hidden>
+  <button id="yes">Confirm</button><button id="no">Cancel</button>
+</div>
+<p>
+  <input id="msg" placeholder="e.g. sold 5 blue pens">
+  <button id="send">Send</button>
+</p>
+<details><summary>Tool log</summary><pre id="log">-</pre></details>
+<h3>Saved transactions</h3>
+<ul id="txns"></ul>
+<pre id="detail" hidden></pre>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let messages = [];
+let pending = null;
+
+function add(cls, text) {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = text;
+  $('chat').appendChild(d);
+}
+
+async function send() {
+  const text = $('msg').value.trim();
+  if (!text) return;
+  $('send').disabled = true;
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [...messages, { role: 'user', text }] }),
+    });
+    const data = await r.json();
+    if (!r.ok) { add('err', data.error || 'Error'); return; } // input is kept for retry
+    messages.push({ role: 'user', text }, { role: 'model', text: data.reply });
+    add('u', text);
+    add('a', data.reply);
+    $('msg').value = '';
+    $('log').textContent = JSON.stringify(data.log, null, 2);
+    pending = data.pending || null;
+    $('pending').hidden = !pending;
+  } catch (e) {
+    add('err', 'Network error. Please retry.');
+  } finally {
+    $('send').disabled = false;
+  }
+}
+
+async function confirmIt() {
+  if (!pending) return;
+  const r = await fetch('/api/confirm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pending),
+  });
+  const d = await r.json();
+  if (!r.ok) add('err', d.error);
+  else {
+    add('a', `Saved. New balance: ${d.after} ${d.unit}.`);
+    messages.push({ role: 'user', text: 'Confirmed.' }, { role: 'model', text: `Saved. New balance ${d.after} ${d.unit}.` });
+  }
+  pending = null;
+  $('pending').hidden = true;
+  loadTxns();
+}
+
+function cancelIt() {
+  add('a', 'Cancelled. Nothing was saved.');
+  messages.push({ role: 'user', text: 'Cancel that.' }, { role: 'model', text: 'Cancelled.' });
+  pending = null;
+  $('pending').hidden = true;
+}
+
+async function loadTxns() {
+  const list = await (await fetch('/api/transactions')).json();
+  $('txns').innerHTML = '';
+  list.forEach((t) => {
+    const li = document.createElement('li');
+    li.textContent = `${t.movement} ${t.quantity} ${t.unit} ${t.name} (${t.before} -> ${t.after})`;
+    li.onclick = async () => {
+      const d = await (await fetch('/api/transactions/' + t._id)).json();
+      $('detail').hidden = false;
+      $('detail').textContent = JSON.stringify(d, null, 2);
+    };
+    $('txns').appendChild(li);
+  });
+}
+
+$('send').onclick = send;
+$('yes').onclick = confirmIt;
+$('no').onclick = cancelIt;
+$('msg').addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+loadTxns();
+</script>
+</body>
+</html>
